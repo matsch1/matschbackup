@@ -1,0 +1,27 @@
+version: '3'
+
+vars:
+  binary: "matschbackup"
+tasks:
+  rmbin:
+    desc: "remove old binary"
+    cmds:
+      - |
+        if [ -e {{.binary}} ]; then
+          rm ./{{.binary}}
+          echo old binary deleted
+        fi
+  build:
+    desc: "build go binary"
+    cmds:
+      - task: rmbin
+      - |
+        go build -o ./{{.binary}}
+        chmod +x ./{{.binary}}
+        echo build succesful!
+  full:
+    desc: "run full backup"
+    cmds:
+      - task: build
+      - |
+        ./{{.binary}} full
