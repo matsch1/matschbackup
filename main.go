@@ -37,6 +37,7 @@ var (
 	remoteBase    string
 	daysThreshold int
 	dryRun        bool
+	compress      bool
 	verbose       bool
 )
 
@@ -52,85 +53,12 @@ func main() {
 	rootCmd.Flags().StringVar(&remoteBase, "remote", defaultRemoteBase, "Remote rclone target path")
 	rootCmd.Flags().IntVar(&daysThreshold, "days", defaultDaysThreshold, "Minimum age in days before making new backup")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Only show what would be done")
+	rootCmd.Flags().BoolVarP(&compress, "zip", "c", false, "Compress directories before copying to remote")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Error("Error rootCmd: ", "error", err)
 	}
-}
-
-func runBackup(cmd *cobra.Command, args []string) {
-	log.Info("========= Start backup =========")
-
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	remotePath := fmt.Sprintf("%s/bak_%s", remoteBase, timestamp)
-
-	dirs, err := listRemoteDirs()
-	if err != nil {
-		log.Error("Failed to list remote dirs: ", "error", err)
-		return
-	}
-
-	for i := range dirs {
-		dirs[i] = strings.TrimSuffix(dirs[i], "/")
-	}
-	sort.Strings(dirs)
-
-	if len(dirs) >= maxBackups && !dryRun {
-		toDelete := dirs[0]
-		log.Info("Deleting oldest backup to maintain limit", "dir", toDelete)
-		if err := purgeRemoteDir(toDelete); err != nil {
-			log.Error("Failed to delete old backup: ", "error", err)
-		}
-	}
-
-	doBackup := false
-
-	if len(dirs) == 0 {
-		log.Info("No old backup found.")
-		doBackup = true
-	} else {
-		latest := dirs[len(dirs)-1]
-		tsStr := strings.TrimPrefix(latest, "bak_")
-		latestTime, err := time.Parse("2006-01-02_15-04-05", tsStr)
-		if err != nil {
-			log.Error("Failed to parse timestamp: ", "error", err)
-		}
-
-		age := time.Since(latestTime)
-		if age > time.Duration(daysThreshold)*24*time.Hour {
-			doBackup = true
-		} else {
-			log.Info("✅ Last backup is recent.")
-		}
-	}
-
-	if doBackup {
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, defaultConcurrency) // limit concurrency
-
-		for _, path := range pathsToBackup {
-			wg.Add(1)
-			go func(path string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				log.Info("Backing up:", "path", path)
-				if !dryRun {
-					err := copyToRemote(path, fmt.Sprintf("%s/%s", remotePath, path))
-					if err != nil {
-						log.Error("Backup failed", "path", path, "error", err)
-						return
-					}
-					log.Info("✅ Backup done", "path", path)
-				}
-			}(path)
-		}
-		wg.Wait()
-	}
-
-	log.Info("========= Backup done =========")
 }
 
 func runCommand(name string, args ...string) (string, error) {
@@ -150,7 +78,74 @@ func runCommand(name string, args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-func listRemoteDirs() ([]string, error) {
+func runBackup(cmd *cobra.Command, args []string) {
+	log.Info("========= Start backup =========")
+
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	remotePath := fmt.Sprintf("%s/bak_%s", remoteBase, timestamp)
+
+	// get old backup list
+	old_backups, err := listRemoteBackups()
+	if err != nil {
+		log.Error("Failed to list remote backups: ", "error", err)
+		return
+	}
+
+	for i := range old_backups {
+		old_backups[i] = strings.TrimSuffix(old_backups[i], "/")
+	}
+	sort.Strings(old_backups)
+
+	// find days since last backup
+	latest_backup := old_backups[len(old_backups)-1]
+	tsStr := strings.TrimPrefix(latest_backup, "bak_")
+	latest_backup_time, err := time.Parse("2006-01-02_15-04-05", tsStr)
+	if err != nil {
+		log.Error("Failed to parse timestamp of latest backup: ", "error", err)
+	}
+
+	// delete oldest backup if necessary and do backup
+	if time.Since(latest_backup_time) > time.Duration(daysThreshold)*24*time.Hour {
+		if len(old_backups) >= maxBackups {
+			log.Info("Deleting oldest backup to maintain limit", "dir", old_backups[0])
+			if !dryRun {
+				if err := purgeRemoteDir(old_backups[0]); err != nil {
+					log.Error("Failed to delete old backup: ", "error", err)
+				}
+			} else {
+				log.Warn("dryRun! Backup not deleted", "dir", old_backups[0])
+			}
+		}
+		// do backup
+		var waitgroup sync.WaitGroup
+		sem := make(chan struct{}, defaultConcurrency)
+
+		for _, path := range pathsToBackup {
+			waitgroup.Add(1)
+			go func(path string) {
+				defer waitgroup.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				log.Info("Backing up:", "path", path)
+				err := copyToRemote(path, fmt.Sprintf("%s/%s", remotePath, path))
+				if err != nil {
+					log.Error("Backup failed", "path", path, "error", err)
+					return
+				}
+				log.Info("✅ Backup done", "path", path)
+
+			}(path)
+		}
+		waitgroup.Wait()
+	} else {
+		log.Info("✅ Last backup is recent.")
+	}
+
+	log.Info("========= Backup done =========")
+}
+
+func listRemoteBackups() ([]string, error) {
 	out, err := runCommand("rclone", "lsf", remoteBase, "--dirs-only")
 	if err != nil {
 		return nil, err
@@ -219,22 +214,36 @@ func zipDirectory(sourceDir, zipPath string) error {
 func purgeRemoteDir(dir string) error {
 	fullPath := fmt.Sprintf("%s/%s", remoteBase, dir)
 	log.Info("Purging remote dir", "dir", fullPath)
-	return exec.Command("rclone", "purge", fullPath).Run()
+	_, err := runCommand("rclone", "purge", fullPath)
+	return err
 }
 
 func copyToRemote(localPath, remotePath string) error {
 	baseName := strings.ReplaceAll(strings.TrimPrefix(localPath, "/"), "/", "_")
-	zipName := fmt.Sprintf("/tmp/%s.zip", baseName)
-
-	err := zipDirectory(localPath, zipName)
-	if err != nil {
-		return fmt.Errorf("failed to zip %s: %w", localPath, err)
+	sourceName := ""
+	if compress {
+		sourceName = fmt.Sprintf("/tmp/%s.zip", baseName)
+		if !dryRun {
+			err := zipDirectory(localPath, sourceName)
+			if err != nil {
+				return fmt.Errorf("failed to zip %s: %w", localPath, err)
+			}
+			defer os.Remove(sourceName)
+		} else {
+			log.Warn("dryRun: directory not zipped", "localPath", localPath)
+		}
+	} else {
+		sourceName = localPath
 	}
-	defer os.Remove(zipName)
 
-	remoteZipPath := remotePath + ".zip"
-	cmd := exec.Command("rclone", "copy", zipName, remoteZipPath, "--progress", "--transfers=1", "--checkers=4", "--fast-list")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if !dryRun {
+		_, err := runCommand("rclone", "copy", sourceName, remotePath, "--progress", "--transfers=1", "--checkers=4", "--fast-list")
+		if err != nil {
+			return fmt.Errorf("failed to copy to remote %s: %w", remotePath, err)
+		}
+
+	} else {
+		log.Warn("dryRun: rclone copy not done", "remotePath", remotePath)
+	}
+	return nil
 }
