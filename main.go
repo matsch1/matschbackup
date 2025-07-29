@@ -139,7 +139,7 @@ func runBackup(cmd *cobra.Command, args []string) {
 
 	} else {
 		daysSince := time.Since(latest_backup_time).Hours() / 24
-		log.Info("✅ Last backup is recent.", "days since last backup", math.Floor(daysSince))
+		log.Info("✅ Last backup is recent.", "days since last backup", math.Round(daysSince))
 
 	}
 
