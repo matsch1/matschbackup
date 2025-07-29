@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,27 +19,20 @@ import (
 )
 
 const (
-	defaultRemoteBase    = "fritznas:/fritz.nas/NAS/Matthias/backups"
-	defaultConcurrency   = 2
 	defaultBackupMax     = 14
 	defaultDaysThreshold = 7
+	defaultConcurrency   = 2 // max number of parallel backups
 )
 
 var (
-	pathsToBackup        []string
-	defaultPathsToBackup = []string{
-		"/home/" + os.Getenv("USER") + "/Files",
-		"/home/" + os.Getenv("USER") + "/src",
-		"/home/" + os.Getenv("USER") + "/obsidian",
-		"/home/" + os.Getenv("USER") + "/_Ablage",
-		"/home/" + os.Getenv("USER") + "/.config",
-	}
+	pathsToBackup []string
 	maxBackups    int
 	remoteBase    string
 	daysThreshold int
+	concurrency   int
 	dryRun        bool
 	compress      bool
-	verbose       bool
+	debug         bool
 )
 
 func main() {
@@ -48,44 +42,42 @@ func main() {
 		Run:   runBackup,
 	}
 
-	rootCmd.Flags().StringArrayVarP(&pathsToBackup, "path", "p", defaultPathsToBackup, "Paths to back up")
+	rootCmd.Flags().StringSliceVar(&pathsToBackup, "path", nil, "Paths to back up")
+	rootCmd.MarkFlagRequired("pathsToBackup")
+	rootCmd.Flags().StringVar(&remoteBase, "remote", "", "Remote rclone target path")
+	rootCmd.MarkFlagRequired("remote")
 	rootCmd.Flags().IntVar(&maxBackups, "max-backups", defaultBackupMax, "Maximum number of backups to keep")
-	rootCmd.Flags().StringVar(&remoteBase, "remote", defaultRemoteBase, "Remote rclone target path")
-	rootCmd.Flags().IntVar(&daysThreshold, "days", defaultDaysThreshold, "Minimum age in days before making new backup")
+	rootCmd.Flags().IntVar(&daysThreshold, "max-days", defaultDaysThreshold, "Minimum age in days before making new backup")
+	rootCmd.Flags().IntVar(&concurrency, "concurrency", defaultConcurrency, "Max. number of parralel backup directories")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Only show what would be done")
-	rootCmd.Flags().BoolVarP(&compress, "zip", "c", false, "Compress directories before copying to remote")
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.Flags().BoolVarP(&compress, "zip", "z", false, "Compress directories before copying to remote")
+	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Enable debug output")
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Error("Error rootCmd: ", "error", err)
 	}
 }
 
-func runCommand(name string, args ...string) (string, error) {
-	if verbose {
-		log.SetLevel(log.DebugLevel)
-		log.Debug("Execute:", "cmd", name+" "+strings.Join(args, " "))
-	}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("error: %v\nstderr: %s", err, stderr.String())
-	}
-	return stdout.String(), nil
-}
-
 func runBackup(cmd *cobra.Command, args []string) {
 	log.Info("========= Start backup =========")
+	if debug {
+		log.SetLevel(log.DebugLevel)
+		log.Debug("Debug Mode")
+	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	remotePath := fmt.Sprintf("%s/bak_%s", remoteBase, timestamp)
 
+	// check rclone config
+	err := checkRcloneRemote(remoteBase)
+	if err != nil {
+		log.Error("Failed to execute rclone: ", "error", err)
+		return
+	}
+
 	// get old backup list
 	old_backups, err := listRemoteBackups()
+	log.Debug("Backups found on remote", "number", len(old_backups))
 	if err != nil {
 		log.Error("Failed to list remote backups: ", "error", err)
 		return
@@ -118,7 +110,7 @@ func runBackup(cmd *cobra.Command, args []string) {
 		}
 		// do backup
 		var waitgroup sync.WaitGroup
-		sem := make(chan struct{}, defaultConcurrency)
+		sem := make(chan struct{}, concurrency)
 
 		for _, path := range pathsToBackup {
 			waitgroup.Add(1)
@@ -138,11 +130,40 @@ func runBackup(cmd *cobra.Command, args []string) {
 			}(path)
 		}
 		waitgroup.Wait()
+
+		// Add file to verify backup as completed
+		_, err := runCommand("rclone", "touch", fmt.Sprintf("%s/%s", remotePath, "BACKUP_COMPLETED"))
+		if err != nil {
+			log.Error("failed to create BACKUP_COMPLETED file")
+		}
+
 	} else {
-		log.Info("✅ Last backup is recent.")
+		daysSince := time.Since(latest_backup_time).Hours() / 24
+		log.Info("✅ Last backup is recent.", "days since last backup", math.Floor(daysSince))
+
 	}
 
 	log.Info("========= Backup done =========")
+}
+
+func checkRcloneRemote(remoteBase string) error {
+	// check if rclone is installed
+	if _, err := exec.LookPath("rclone"); err != nil {
+		return fmt.Errorf("rclone not found in path: %w", err)
+	}
+	log.Debug("rclone installed")
+
+	// Check if the remoteBase is accessible
+	cmd := exec.Command("rclone", "lsd", remoteBase)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to access remote %q: %v\n%s", remoteBase, err, stderr.String())
+	}
+	log.Debug("remote access ok", "remote", remoteBase)
+
+	return nil
 }
 
 func listRemoteBackups() ([]string, error) {
@@ -242,8 +263,28 @@ func copyToRemote(localPath, remotePath string) error {
 			return fmt.Errorf("failed to copy to remote %s: %w", remotePath, err)
 		}
 
+		// Add file to verify backup as completed
+		_, err = runCommand("rclone", "touch", fmt.Sprintf("%s/%s", remotePath, "BACKUP_COMPLETED"))
+		if err != nil {
+			return fmt.Errorf("failed to create BACKUP_COMPLETED file")
+		}
+
 	} else {
 		log.Warn("dryRun: rclone copy not done", "remotePath", remotePath)
 	}
 	return nil
+}
+
+func runCommand(name string, args ...string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log.Debug("Execute:", "cmd", name+" "+strings.Join(args, " "))
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("error: %v\nstderr: %s", err, stderr.String())
+	}
+	return stdout.String(), nil
 }
