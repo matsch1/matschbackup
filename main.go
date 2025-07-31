@@ -186,7 +186,7 @@ func zipDirectory(sourceDir, zipPath string) error {
 	log.Debug("Zipping directory", "source", sourceDir, "output", zipPath)
 	zipFile, err := os.Create(zipPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating zipFile %s", zipPath)
 	}
 	defer zipFile.Close()
 
@@ -196,21 +196,18 @@ func zipDirectory(sourceDir, zipPath string) error {
 	count := 0
 	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Warn("Error reading path", "path", path, "error", err)
+			log.Warn("Error reading path. Skipping", "path", path, "error", err)
 			return nil
 		}
 
 		// Skip symlinks and dirs
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if info.IsDir() {
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
 			return nil
 		}
 
 		relPath, err := filepath.Rel(sourceDir, path)
 		if err != nil {
-			return err
+			return fmt.Errorf("error creating relative path: %s", relPath)
 		}
 
 		if count%100 == 0 {
@@ -227,21 +224,21 @@ func zipDirectory(sourceDir, zipPath string) error {
 
 		writerEntry, err := writer.Create(relPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("error creating file %s", relPath)
 		}
 		_, err = io.Copy(writerEntry, file)
 		return err
 	})
 
 	log.Debug("Zipping done", "dir", sourceDir, "total files", count)
-	return err
+	return fmt.Errorf("error filepath.Walk %s", err)
 }
 
 func purgeRemoteDir(dir string) error {
 	fullPath := fmt.Sprintf("%s/%s", remoteBase, dir)
 	log.Info("Purging remote dir", "dir", fullPath)
 	_, err := runCommand("rclone", "purge", fullPath)
-	return err
+	return fmt.Errorf("error purging remote directory %s", err)
 }
 
 func copyToRemote(localPath, remotePath string) error {
