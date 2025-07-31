@@ -77,7 +77,6 @@ func runBackup(cmd *cobra.Command, args []string) {
 
 	// get old backup list
 	old_backups, err := listRemoteBackups()
-	log.Debug("Backups found on remote", "number", len(old_backups))
 	if err != nil {
 		log.Error("Failed to list remote backups: ", "error", err)
 		return
@@ -167,14 +166,20 @@ func checkRcloneRemote(remoteBase string) error {
 }
 
 func listRemoteBackups() ([]string, error) {
-	out, err := runCommand("rclone", "lsf", remoteBase, "--dirs-only")
+	backup_list, err := runCommand("rclone", "lsf", remoteBase, "--dirs-only")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error running rclone lsf %s", remoteBase)
 	}
-	if strings.TrimSpace(out) == "" {
-		return []string{}, nil
+
+	old_backups := []string{}
+	if strings.TrimSpace(backup_list) == "" {
+		log.Warn("No old backups found")
+	} else {
+		old_backups = strings.Split(strings.TrimSpace(backup_list), "\n")
+		log.Debug("Backups found on remote", "number", len(old_backups))
 	}
-	return strings.Split(strings.TrimSpace(out), "\n"), nil
+
+	return old_backups, nil
 }
 
 func zipDirectory(sourceDir, zipPath string) error {
