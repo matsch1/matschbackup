@@ -231,7 +231,7 @@ func zipDirectory(sourceDir, zipPath string) error {
 	})
 
 	log.Debug("Zipping done", "dir", sourceDir, "total files", count)
-	return fmt.Errorf("error filepath.Walk %s", err)
+	return err
 }
 
 func purgeRemoteDir(dir string) error {
