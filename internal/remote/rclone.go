@@ -11,7 +11,7 @@ import (
 	"matschbackup/pkg"
 )
 
-func CheckRcloneRemote(remoteBase string) error {
+func RcloneRemoteAccessible(remoteBase string) error {
 	// check if rclone is installed
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return fmt.Errorf("rclone not found in path: %w", err)
@@ -49,6 +49,7 @@ func ListRemoteBackups(remoteBase string) ([]string, error) {
 }
 
 func PurgeRemoteDir(remoteBase string, dir string) error {
+	log.Info("Deleting oldest backup to maintain limit", "dir", dir)
 	fullPath := fmt.Sprintf("%s/%s", remoteBase, dir)
 	log.Info("Purging remote dir", "dir", fullPath)
 	_, err := pkg.RunCommand("rclone", "purge", fullPath)

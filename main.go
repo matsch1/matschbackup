@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"matschbackup/internal/remote"
+	"matschbackup/internal/utils"
 	"matschbackup/pkg"
 )
 
@@ -62,59 +61,30 @@ func runBackup(cmd *cobra.Command, args []string) {
 		log.Debug("Debug Mode")
 	}
 
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	remotePath := fmt.Sprintf("%s/bak_%s", remoteBase, timestamp)
-
 	// check rclone config
-	err := remote.CheckRcloneRemote(remoteBase)
+	err := remote.RcloneRemoteAccessible(remoteBase)
 	if err != nil {
 		log.Error("Failed to execute rclone: ", "error", err)
 		return
 	}
 
-	// get old backup list
-	old_backups, err := remote.ListRemoteBackups(remoteBase)
-	if err != nil {
-		log.Error("Failed to list remote backups: ", "error", err)
-		return
-	}
-
-	for i := range old_backups {
-		old_backups[i] = strings.TrimSuffix(old_backups[i], "/")
-	}
-	sort.Strings(old_backups)
-
-	// find days since last backup
-	latest_backup := old_backups[len(old_backups)-1]
-	tsStr := strings.TrimPrefix(latest_backup, "bak_")
-	latest_backup_time, err := time.Parse("2006-01-02_15-04-05", tsStr)
-	if err != nil {
-		log.Error("Failed to parse timestamp of latest backup: ", "error", err)
-	}
-
 	// delete oldest backup if necessary and do backup
-	if time.Since(latest_backup_time) > time.Duration(daysThreshold)*24*time.Hour {
-		if len(old_backups) >= maxBackups {
-			log.Info("Deleting oldest backup to maintain limit", "dir", old_backups[0])
-			if !dryRun {
-				backup_to_delete := 0 // oldest backup
-				number_of_valid_backups, _ := remote.GetNumberOfValidBackups(remotePath)
-				if number_of_valid_backups <= 1 {
-					backup_to_delete_is_valid, _ := remote.BackupIsValid(old_backups[backup_to_delete])
-					if backup_to_delete_is_valid {
-						backup_to_delete = backup_to_delete + 1
-					}
-				}
-				if err := remote.PurgeRemoteDir(remoteBase, old_backups[backup_to_delete]); err != nil {
-					log.Error("Failed to delete old backup: ", "error", err)
-				}
-			} else {
-				log.Warn("dryRun! Backup not deleted", "dir", old_backups[0])
-			}
+	backup_to_old, err := utils.LastBackupToOld(remoteBase, daysThreshold)
+	if backup_to_old {
+		log.Debug("Recent backup to old")
+
+		to_many_backups, err := utils.ToManyBackups(remoteBase, maxBackups)
+		if to_many_backups {
+			log.Debug("To many backups on remote")
+			utils.DeleteOldBackup(remoteBase, dryRun)
 		}
 		// do backup
 		var waitgroup sync.WaitGroup
 		sem := make(chan struct{}, concurrency)
+
+		// Create path for new backup
+		timestamp := time.Now().Format("2006-01-02_15-04-05")
+		remotePath := fmt.Sprintf("%s/bak_%s", remoteBase, timestamp)
 
 		for _, path := range pathsToBackup {
 			waitgroup.Add(1)
@@ -136,12 +106,13 @@ func runBackup(cmd *cobra.Command, args []string) {
 		waitgroup.Wait()
 
 		// Add file to verify backup as completed
-		_, err := pkg.RunCommand("rclone", "touch", fmt.Sprintf("%s/%s", remotePath, "BACKUP_COMPLETED"))
+		_, err = pkg.RunCommand("rclone", "touch", fmt.Sprintf("%s/%s", remotePath, "BACKUP_COMPLETED"))
 		if err != nil {
 			log.Error("failed to create BACKUP_COMPLETED file")
 		}
 
 	} else {
+		latest_backup_time, _ := utils.GetLastBackup(remoteBase)
 		daysSince := time.Since(latest_backup_time).Hours() / 24
 		log.Info("✅ Last backup is recent.", "days since last backup", math.Round(daysSince))
 
