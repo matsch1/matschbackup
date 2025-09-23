@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -28,13 +29,18 @@ func DeleteOldBackup(remoteBase string, dryRun bool) error {
 	old_backups, _ := GetListOfBackupNames(remoteBase)
 	if !dryRun {
 		backup_to_delete := 0 // oldest backup
-		number_of_valid_backups, _ := remote.GetNumberOfValidBackups(remoteBase)
+		number_of_valid_backups, err := remote.GetNumberOfValidBackups(remoteBase)
+		if err != nil {
+			log.Error("error getting number of valid backups", "err", err)
+		}
 		if number_of_valid_backups <= 1 {
-			log.Warn("Numver of completed backups <= 1")
-			backup_to_delete_is_valid, _ := remote.BackupIsValid(old_backups[backup_to_delete])
+			log.Warn("Number of completed backups <= 1")
+			log.Debug("remoteBase", "path", remoteBase)
+			backup_to_delete_is_valid, _ := remote.BackupIsValid(filepath.Join(remoteBase, old_backups[backup_to_delete]))
 			if backup_to_delete_is_valid {
 				backup_to_delete = backup_to_delete + 1
 			}
+			log.Debug("Backup to delete", "name", old_backups[backup_to_delete])
 		}
 		if err := remote.PurgeRemoteDir(remoteBase, old_backups[backup_to_delete]); err != nil {
 			log.Error("Failed to delete old backup: ", "error", err)
@@ -61,12 +67,14 @@ func GetLastBackup(remoteBase string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("Failed to convert backup time: %s ", err)
 	}
 
+	log.Debug("Latest backup time", "time", latest_backup_time)
 	return latest_backup_time, nil
 }
 func LastBackupToOld(remoteBase string, daysThreshold int) (bool, error) {
 	latest_backup_time, _ := GetLastBackup(remoteBase)
 
 	if time.Since(latest_backup_time) > time.Duration(daysThreshold)*24*time.Hour {
+		log.Debug("LastBackupToOld?", "state", true)
 		return true, nil
 	} else {
 		return false, nil
@@ -79,6 +87,7 @@ func ToManyBackups(remoteBase string, maxBackups int) (bool, error) {
 		return false, fmt.Errorf("error getting list of old backups: %s", err)
 	}
 	if len(old_backups) >= maxBackups {
+		log.Debug("ToManyBackups? ", "state", true)
 		return true, nil
 	}
 	return false, nil

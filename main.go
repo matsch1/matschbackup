@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultBackupMax     = 14
-	defaultDaysThreshold = 7
+	defaultDaysThreshold = 1
 	defaultConcurrency   = 2 // max number of parallel backups
 )
 
