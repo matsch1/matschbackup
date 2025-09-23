@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"matschbackup/internal/remote"
+	"matschbackup/pkg"
 )
 
 func GetListOfBackupNames(remoteBase string) ([]string, error) {
@@ -29,14 +30,14 @@ func DeleteOldBackup(remoteBase string, dryRun bool) error {
 	old_backups, _ := GetListOfBackupNames(remoteBase)
 	if !dryRun {
 		backup_to_delete := 0 // oldest backup
-		number_of_valid_backups, err := remote.GetNumberOfValidBackups(remoteBase)
+		number_of_valid_backups, err := GetNumberOfValidBackups(remoteBase)
 		if err != nil {
 			log.Error("error getting number of valid backups", "err", err)
 		}
-		if number_of_valid_backups <= 1 {
+		if number_of_valid_backups <= 5 {
 			log.Warn("Number of completed backups <= 1")
 			log.Debug("remoteBase", "path", remoteBase)
-			backup_to_delete_is_valid, _ := remote.BackupIsValid(filepath.Join(remoteBase, old_backups[backup_to_delete]))
+			backup_to_delete_is_valid, _ := BackupIsValid(filepath.Join(remoteBase, old_backups[backup_to_delete]))
 			if backup_to_delete_is_valid {
 				backup_to_delete = backup_to_delete + 1
 			}
@@ -91,4 +92,29 @@ func ToManyBackups(remoteBase string, maxBackups int) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+func BackupIsValid(backupPath string) (bool, error) {
+	log.Debug("evaluating backup", "path", backupPath)
+	if pkg.FileExists(backupPath) {
+		log.Debug("BackupIsValid")
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func GetNumberOfValidBackups(remoteBase string) (int, error) {
+	backups, err := remote.ListRemoteBackups(remoteBase)
+	if err != nil {
+		return 0, fmt.Errorf("Failed to read dirs in remote base %s ", err)
+	}
+
+	count_valid_backups := 0
+	for _, entry := range backups {
+		if remote.FileExists(filepath.Join(remoteBase, entry, "BACKUP_COMPLETED")) {
+			count_valid_backups = count_valid_backups + 1
+		}
+	}
+	log.Debug("number of valid backups in", "path", remoteBase, "count", count_valid_backups)
+	return count_valid_backups, nil
 }

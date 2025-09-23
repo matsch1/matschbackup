@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"matschbackup/pkg"
@@ -94,32 +93,7 @@ func CopyToRemote(localPath string, remotePath string, compress bool, dryRun boo
 	return nil
 }
 
-func BackupIsValid(backupPath string) (bool, error) {
-	log.Debug("evaluating backup", "path", backupPath)
-	if pkg.FileExists(backupPath) {
-		log.Debug("BackupIsValid")
-		return true, nil
-	}
-
-	return false, nil
-}
-
-func GetNumberOfValidBackups(remoteBase string) (int, error) {
-	backups, err := ListRemoteBackups(remoteBase)
-	if err != nil {
-		return 0, fmt.Errorf("Failed to read dirs in remote base %s ", err)
-	}
-
-	count_valid_backups := 0
-	for _, entry := range backups {
-		if fileExists(filepath.Join(remoteBase, entry, "BACKUP_COMPLETED")) {
-			count_valid_backups = count_valid_backups + 1
-		}
-	}
-	log.Debug("number of valid backups in", "path", remoteBase, "count", count_valid_backups)
-	return count_valid_backups, nil
-}
-func fileExists(remotePath string) bool {
+func FileExists(remotePath string) bool {
 	cmd := exec.Command("rclone", "lsf", remotePath)
 	err := cmd.Run()
 	return err == nil
