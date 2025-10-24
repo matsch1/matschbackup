@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	defaultBackupMax     = 14
 	defaultDaysThreshold = 1
 	defaultConcurrency   = 2 // max number of parallel backups
+	LOGFILE              = "./matschbackup.log"
 )
 
 var (
@@ -27,11 +29,15 @@ var (
 	daysThreshold int
 	concurrency   int
 	dryRun        bool
+	forceRun      bool
 	compress      bool
 	debug         bool
 )
 
 func main() {
+	logfn := utils.LogOutput(LOGFILE)
+	defer logfn()
+
 	rootCmd := &cobra.Command{
 		Use:   "backup",
 		Short: "Backup specific files to Fritz!NAS via rclone",
@@ -46,12 +52,14 @@ func main() {
 	rootCmd.Flags().IntVar(&daysThreshold, "max-days", defaultDaysThreshold, "Minimum age in days before making new backup")
 	rootCmd.Flags().IntVar(&concurrency, "concurrency", defaultConcurrency, "Max. number of parralel backup directories")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Only show what would be done")
+	rootCmd.Flags().BoolVar(&forceRun, "force-run", false, "Forces backups regardelesse how many backups exist")
 	rootCmd.Flags().BoolVarP(&compress, "zip", "z", false, "Compress directories before copying to remote")
 	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Enable debug output")
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Error("Error rootCmd: ", "error", err)
 	}
+
 }
 
 func runBackup(cmd *cobra.Command, args []string) {
@@ -70,7 +78,7 @@ func runBackup(cmd *cobra.Command, args []string) {
 
 	// delete oldest backup if necessary and do backup
 	backup_to_old, err := utils.LastBackupToOld(remoteBase, daysThreshold)
-	if backup_to_old {
+	if backup_to_old || forceRun {
 		log.Debug("Recent backup to old")
 
 		to_many_backups, err := utils.ToManyBackups(remoteBase, maxBackups)
@@ -111,6 +119,18 @@ func runBackup(cmd *cobra.Command, args []string) {
 			log.Error("failed to create BACKUP_COMPLETED file")
 		}
 
+		// Move logfile
+		_, err = pkg.RunCommand("rclone", "copy", LOGFILE, remotePath, "--progress", "--transfers=1", "--checkers=4", "--fast-list")
+		if err != nil {
+			log.Error("Failed to copy logfile", "path", LOGFILE, "error", err)
+			return
+		}
+		err = os.Remove(LOGFILE)
+		if err != nil {
+			log.Error("Failed to delete logfile", "path", LOGFILE, "error", err)
+			return
+		}
+
 	} else {
 		latest_backup_time, _ := utils.GetLastBackup(remoteBase)
 		daysSince := time.Since(latest_backup_time).Hours() / 24
@@ -119,4 +139,5 @@ func runBackup(cmd *cobra.Command, args []string) {
 	}
 
 	log.Info("========= Backup done =========")
+
 }
