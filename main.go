@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultBackupMax     = 14
-	defaultDaysThreshold = 1
+	defaultDaysThreshold = 5
 	defaultConcurrency   = 2 // max number of parallel backups
 	LOGFILE              = "./matschbackup.log"
 )
