@@ -61,15 +61,17 @@ func GetLastBackup(remoteBase string) (time.Time, error) {
 	}
 
 	// find days since last backup
-	latest_backup := old_backups[len(old_backups)-1]
-	timeString := strings.TrimPrefix(latest_backup, "bak_")
-	latest_backup_time, err := ConvertTimeStringToTime(timeString)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("Failed to convert backup time: %s ", err)
+	if len(old_backups) != 0 {
+		latest_backup := old_backups[len(old_backups)-1]
+		timeString := strings.TrimPrefix(latest_backup, "bak_")
+		latest_backup_time, err := ConvertTimeStringToTime(timeString)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("Failed to convert backup time: %s ", err)
+		}
+		log.Debug("Latest backup time", "time", latest_backup_time)
+		return latest_backup_time, nil
 	}
-
-	log.Debug("Latest backup time", "time", latest_backup_time)
-	return latest_backup_time, nil
+	return time.Unix(0, 0).UTC(), nil
 }
 func LastBackupToOld(remoteBase string, daysThreshold int) (bool, error) {
 	latest_backup_time, _ := GetLastBackup(remoteBase)
